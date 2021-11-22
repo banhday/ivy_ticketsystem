@@ -1,0 +1,262 @@
+#lang ivy1.7
+
+# To verify this file, run:
+#
+#     $ ivy_check ticket_system_v1.ivy
+#     ...
+#     OK
+
+
+################################################################################
+#
+# Types describing the state
+# Types thread and ticket are translated as uninterpreted sorts in Z3.
+# We can use a scalar type, e.g., type thread = {one, two, three} that creates 
+# an instance with three threads.
+#
+################################################################################
+
+type thread
+type ticket
+
+################################################################################
+#
+# A total order on ticket
+# A theory for integers is not a decidable fragment in first-order logic.
+# In the ticket system, we need only the relation "less than" and the success
+# function "succ", which sends a natural number to the next one. 
+# Hence, we can encode ticket numbers with Presburger arithmetic that is 
+# a decidable fragment in first-order logic. 
+#
+################################################################################
+
+relation le(X:ticket, Y:ticket)
+axiom le(X,X)                           # Reflexivity
+axiom le(X, Y) & le(Y, Z) -> le(X, Z)   # Transitivity
+axiom le(X, Y) & le(Y, X) -> X = Y      # Anti-symmetry
+axiom le(X, Y) | le(Y, X)               # Totality
+
+individual zero:ticket
+axiom forall X. le(zero, X)
+
+
+################################################################################
+#
+# Action succ can be considered as an internal transition. 
+# This action is called by action request_ticket that is explained later.
+#
+################################################################################
+
+action succ(x:ticket) returns (y:ticket) = {
+    assume ~le(y,x) & forall Z:ticket. ~le(Z,x) -> le(y,Z)
+}
+
+################################################################################
+#
+# Relations and functions describing the state
+# We can encode has_ticket as a function from type thread to type ticket.
+# However, function symbols are not allowed in the decidable fragment EPR
+# (effectively propositional). 
+# Remind that EPR accepts only expressions that, when written in prenex normal 
+# form, have an (\exists^{*} \forall^{*}}) quantifier prefix and do not contain 
+# any function symbols. 
+#
+################################################################################
+
+relation idle(T:thread)
+relation awaiting(T:thread)
+relation critical(T:thread)
+
+individual serving:ticket
+individual next_ticket:ticket
+relation has_ticket(T:thread, K:ticket)  
+	
+
+################################################################################
+#
+# The initial state
+#   1) Every thread is idle.
+#   2) The serving number is zero.
+#   3) No ticket is issued.
+#   4) Every thread holds no ticket.
+#
+################################################################################
+
+after init {
+	idle(T) := true;
+	awaiting(T) := false;
+	critical(T) := false;
+	serving := zero;
+	next_ticket := zero;
+	has_ticket(T,K) := K = zero;
+}
+
+
+################################################################################
+#
+# Thread t requests a ticket.
+#   1) Pre-condition is represented with "require".
+#           Thread t must be idle.
+#   2) Thread t takes the available ticket.
+#           \forall K : ticket . has_ticket(t,K) <=> K = next_ticket
+#   3) The ticket dispenser issues a new ticket.
+#   4) Thread t is waiting to enter the critical section.
+#
+################################################################################
+
+action request_ticket(t:thread) = {
+	require idle(t);
+    has_ticket(t,K) := K = next_ticket;
+    next_ticket := succ(next_ticket);
+    idle(t) := false;
+    awaiting(t) := true;
+}
+
+
+################################################################################
+#
+# Thread t that has ticket k is still waiting to enter the critical section.
+#   1) The three pre-conditions must hold. 
+#       a) Thread t is awaiting.
+#       b) Thread t has ticket t.
+#       c) Ticket k is neither less than nor equal to serving.
+#   2) The system state is unchanged.
+#
+################################################################################
+
+action wait(t:thread, k:ticket) = {
+	require awaiting(t);
+    require has_ticket(t,k);
+    require ~le(k,serving);
+}
+
+
+################################################################################
+#
+# Thread t with ticket k enters the critical section.
+#   1) The three pre-conditions must hold. 
+#       a) Thread t is awaiting.
+#       b) Thread t has ticket t.
+#       c) Ticket k is less than serving.
+#   2) The status of thread t is changed from awaiting to critical.
+#
+################################################################################
+
+action enter(t:thread, k:ticket) = {
+    require awaiting(t);
+    require has_ticket(t,k);
+    require le(k,serving);
+    awaiting(t) := false;
+    critical(t) := true;            
+}
+
+
+################################################################################
+#
+# Thread t with ticket k exits the critical section.
+#   1) The pre-condition must hold. 
+#       a) Thread t is in the critical section.
+#   2) serving is increased.
+#   3) The status of thread t is changed from critical to idle.
+#
+################################################################################
+
+action exit(t:thread) = {
+    require critical(t);
+    serving := succ(serving);
+    critical(t) := false;
+    idle(t) := true;            
+}
+
+
+################################################################################
+#
+# Four actions request_ticket, wait, encode, and exit are exported.
+# These actions can be considered as global transitions.
+# Actions in an Ivy program execute only in response to calls from the program’s 
+# environment. 
+#
+# Ivy makes the synchronous hypothesis: when the environment calls an action, 
+# it waits for the action to complete before issuing another call. 
+# 
+# Each of these actions can be used to model a single isolated step of a process. 
+# Since the environment is allowed to call these actions in an arbitrary order, 
+# the Ivy program can be used to model arbitrary interleaving of process actions.
+#
+################################################################################
+
+export request_ticket
+export wait
+export enter
+export exit
+
+
+################################################################################
+#
+# Invariants for proving safety (also help for liveness).
+# These following invariants are only on exported actions.
+#
+# Basic invariants
+#   - A thread is idle, awaiting, or critical.
+#   - Every thread can have at most a ticket.
+#
+# Safety property
+#   - At most one thread is in the critical section.
+#
+# Strengthened invariants:
+#   - If next ticket is zero, every thread has no ticket.
+#   - If next ticket is positive and thread t has ticket K, then next ticket
+#     is neither less than nor equal to K.
+#   - If thread is awaiting or in the critical section, thead t has a ticket.
+#   - If threads T1 and T2 have the same ticket K, then T1 and T2 are the same.
+#   - If thread T is in the critical section, thread T has a now serving ticket.
+#   - A now serving ticket is less than next ticket.
+#   - It is impossible that there are two different active threads with tickets.
+################################################################################
+invariant idle(T) | awaiting(T) | critical(T)
+invariant ~idle(T) | ~awaiting(T)
+invariant ~idle(T) | ~critical(T)
+invariant ~awaiting(T) | ~critical(T)
+invariant has_ticket(T,K1) & has_ticket(T,K2) -> K1 = K2
+
+# Safety property
+invariant critical(T1) & critical(T2) -> T1 = T2
+
+# inductive invariant for proving safety
+invariant next_ticket = zero -> has_ticket(T,zero)
+invariant next_ticket ~= zero & has_ticket(T,K) -> ~le(next_ticket,K)
+invariant (awaiting(T) | critical(T)) -> next_ticket ~= zero
+invariant has_ticket(T1,K) & has_ticket(T2,K) & K ~= zero -> T1 = T2
+invariant awaiting(T) & has_ticket(T,M) -> le(serving,M)
+invariant critical(T) -> has_ticket(T,serving)
+invariant le(serving,next_ticket)
+invariant ~(~idle(T1) & ~idle(T2) & has_ticket(T1,zero) & has_ticket(T2,zero) & T1 ~= T2)
+
+
+################################################################################
+#
+# Run ivy_check ticket.ivy to check this specification
+#
+# Some useful options:
+#
+#   1) diagnose=true: This options causes the check to stop at the first guarantee 
+#       that fails. A counterexample for this guarantee is constructed and the 
+#       graphical counterexample viewer is launched to display the counterexample. 
+#
+#   2) trace=true: This options causes the check to stop at the first guarantee 
+#       that fails. A counterexample for this guarantee is constructed and a 
+#       corresponding execution trace is printed on standard out.
+#   
+#   3) complete=logic: This option affects the behavior of the fragment checker.
+#       The possible values of logic are:
+#           a) epr: This is the “effectively propositional” fragment, which is 
+#               extended to include stratified use of function symbols.
+#           b) qf: This fragment allows interpreted theories of the prover, but 
+#               no quantifiers.
+#           c) fo: This is unrestricted first-order logic modulo the prover’s theories.
+#                
+# Demo:
+#   - Run IVy to check this specification
+#   - Mark the last invariant as a comment and run IVy with options diagnose=true
+#     and trace=true to see a counterexample.
+################################################################################

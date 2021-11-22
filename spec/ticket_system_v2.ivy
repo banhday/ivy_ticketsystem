@@ -1,0 +1,149 @@
+#lang ivy1.7
+
+# To verify this file, run:
+#
+#     $ ivy_check ticket_system_v2.ivy
+#     ...
+#     OK
+#
+# This specification is very similar to the specification ticket_v1.ivy.
+# However, this specification ticket_v2 applies advance features in IVy,
+# e.g., module, isolate, before, and monitor.
+
+
+################################################################################
+#
+# Module for axiomatizing a total order
+# This module will be instantiated with relation le later.
+# By declaring total order with module, it is convenient to reuse axioms in
+# total order. 
+#
+################################################################################
+
+module total_order(r) = {
+    axiom r(X,X)                        # Reflexivity
+    axiom r(X, Y) & r(Y, Z) -> r(X, Z)  # Transitivity
+    axiom r(X, Y) & r(Y, X) -> X = Y    # Anti-symmetry
+    axiom r(X, Y) | r(Y, X)             # Totality
+}
+
+################################################################################
+#
+# Assume/guarantee reasoning: Ivy doesn’t require us to prove all at once 
+# that a program is safe. Instead, we can break the proof down into smaller proofs 
+# using the assume/guarantee approach.
+#
+# An isolate is a special kind of object that acts as a unit of verification. 
+# In the ticket system, isolation seems not to have great effects.
+# Perhaps it is better to demonstrate the use of isolation with the example: even 
+# and odd numbers.
+#
+################################################################################
+
+isolate ticket_protocol = {
+
+    type thread
+    type ticket
+
+    action request_ticket(t:thread)
+    action wait(t:thread, k:ticket)
+    action enter(t:thread, k:ticket)
+    action exit(t:thread)
+
+    specification {
+
+	    relation le(X:ticket, Y:ticket)
+	    instantiate total_order(le)
+	    action succ(x:ticket) returns (y:ticket) = {
+            assume ~le(y,x) & forall Z:ticket. ~le(Z,x) -> le(y,Z)
+	    }
+
+	    individual zero:ticket
+	    axiom forall X. le(zero, X)
+
+	    relation idle(T:thread)
+	    relation awaiting(T:thread)
+	    relation critical(T:thread)
+
+	    individual serving:ticket
+	    individual next_ticket:ticket
+	    relation has_ticket(T:thread, K:ticket)  # use relation and not a function to be in EPR
+
+
+	    after init {
+            idle(T) := true;
+            awaiting(T) := false;
+            critical(T) := false;
+            serving := zero;
+            next_ticket := zero;
+            has_ticket(T,K) := K = zero;            
+	    }
+
+
+	    before request_ticket {
+            require idle(t);
+            has_ticket(t,K) := K = next_ticket;
+            next_ticket := succ(next_ticket);
+            idle(t) := false;
+            awaiting(t) := true;
+        }
+
+
+    	before wait {
+            require awaiting(t);
+            require has_ticket(t,k);
+            require ~le(k,serving);
+        }
+
+
+	    before enter {
+            require awaiting(t);
+            require has_ticket(t,k);
+            require le(k,serving);
+            awaiting(t) := false;
+            critical(t) := true;
+        }
+
+	
+        before exit {
+            require critical(t);
+            serving := succ(serving);
+            critical(t) := false;
+            idle(t) := true;
+        }
+
+	
+        ################################################################################
+	    #
+	    # Invariants for proving safety (also help for liveness)
+	    #
+	    ################################################################################
+
+	    # Basic invariants
+	    invariant idle(T) | awaiting(T) | critical(T)
+	    invariant ~idle(T) | ~awaiting(T)
+	    invariant ~idle(T) | ~critical(T)
+	    invariant ~awaiting(T) | ~critical(T)
+	    invariant has_ticket(T,K1) & has_ticket(T,K2) -> K1 = K2
+
+	    # Safety property
+	    invariant critical(T1) & critical(T2) -> T1 = T2
+
+	    # Strengthened invariants
+	    invariant next_ticket = zero -> has_ticket(T,zero)
+	    invariant next_ticket ~= zero & has_ticket(T,K) -> ~le(next_ticket,K)
+	    invariant (awaiting(T) | critical(T)) -> next_ticket ~= zero
+	    invariant has_ticket(T1,K) & has_ticket(T2,K) & K ~= zero -> T1 = T2
+	    invariant awaiting(T) & has_ticket(T,K) -> le(serving,K)
+	    invariant critical(T) -> has_ticket(T,serving)
+	    invariant le(serving,next_ticket)
+	    invariant ~(~idle(T1) & ~idle(T2) & has_ticket(T1,zero) & has_ticket(T2,zero) & T1 ~= T2)        
+    }
+}
+
+export ticket_protocol.request_ticket
+export ticket_protocol.wait
+export ticket_protocol.enter
+export ticket_protocol.exit
+
+
