@@ -1,3 +1,3 @@
 Brieft introduction to IVy:
-  - spec: IVy specifications for running examples. Specifications with postfix "_v1" is much simpler than ones with "_v2".
-  - doc: latex files
+  - spec: IVy specifications for the running example. A specification "ticket_system_v1" is much simpler than "ticket_system_v2".
+  - doc: latex files.
